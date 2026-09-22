@@ -1,0 +1,163 @@
+# GitHub Actions test matrix for ScrapydWeb.
+#
+# All install / scrapyd / test / report logic lives in the shared ./test.sh
+# entrypoint (same one used by CircleCI and local runs). This file only
+# declares the matrix and wires environment variables.
+#
+# The set of required combos is enforced by ci/check_matrix.py (see the
+# matrix-check job below and ci/README.md); extend REQUIRED_COMBOS there
+# when adding new legs.
+name: tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  SCRAPYDWEB_TESTMODE: 'True'
+
+jobs:
+  matrix-check:
+    name: CI matrix self-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: ./test.sh check
+
+  test:
+    name: py${{ matrix.python }} (scrapyd ${{ matrix['scrapyd-version'] || 'latest' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
+        scrapyd-version: ['']
+        include:
+          - python: '3.9'
+            scrapyd-version: '1.4.3'
+          - python: '3.12'
+            scrapyd-version: '1.4.3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: ./test.sh install
+        env:
+          SCRAPYD_VERSION: ${{ matrix['scrapyd-version'] }}
+      - name: Launch Scrapyd
+        run: ./test.sh scrapyd
+      - name: Run tests
+        run: ./test.sh test
+      - name: Generate report
+        if: always()
+        run: ./test.sh report
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python }}-scrapyd${{ matrix['scrapyd-version'] || 'latest' }}
+          path: |
+            htmlcov
+            coverage.xml
+          if-no-files-found: ignore
+      - name: Upload to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  test-db:
+    name: py${{ matrix.python }}-${{ matrix.db }}${{ matrix['use-git'] == '1' && '-git' || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10']
+        db: [sqlite, postgresql, mysql]
+        use-git: ['']
+        allure: ['']
+        include:
+          - python: '3.10'
+            db: postgresql
+            use-git: '1'
+            allure: '2.13.1'
+          - python: '3.10'
+            db: mysql
+            use-git: '1'
+            allure: ''
+    services:
+      postgres:
+        image: postgres:9.6
+        env:
+          POSTGRES_USER: circleci
+          POSTGRES_DB: circleci
+          POSTGRES_PASSWORD: passw0rd
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U circleci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -prootpw"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Configure database environment
+        run: ./test.sh env "${{ matrix.db }}" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: ./test.sh install
+        env:
+          USE_GIT: ${{ matrix['use-git'] }}
+      - name: Wait for database
+        run: ./test.sh wait-db
+      - name: Launch Scrapyd
+        run: ./test.sh scrapyd
+      - name: Run tests
+        run: ./test.sh test
+      - name: Generate report
+        if: always()
+        run: ./test.sh report
+      - name: Generate Allure report
+        if: always() && matrix.allure != ''
+        run: ./test.sh allure
+        env:
+          ALLURE_VERSION: ${{ matrix.allure }}
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python }}-${{ matrix.db }}${{ matrix['use-git'] == '1' && '-git' || '' }}
+          path: |
+            htmlcov
+            coverage.xml
+          if-no-files-found: ignore
+      - name: Upload Allure report
+        if: always() && matrix.allure != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-py${{ matrix.python }}-${{ matrix.db }}
+          path: allure-report
+          if-no-files-found: ignore

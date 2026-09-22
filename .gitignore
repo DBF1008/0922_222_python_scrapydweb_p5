@@ -6,6 +6,11 @@ scrapydweb_settings_v*.py
 tests/*.html
 tests/data/
 allure-results/
+allure-report/
+
+# Local CI variants created via `./test.sh env sqlite`
+scrapydweb_data/
+scrapydweb_database/
 
 
 scrapydweb/data/*
