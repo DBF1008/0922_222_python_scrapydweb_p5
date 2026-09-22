@@ -1,0 +1,119 @@
+name: tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fails fast when the matrix below drops a required combination or
+  # the reusable entry points drift out of sync with the env switches.
+  matrix-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml
+      - run: python scripts/ci/check_matrix.py
+
+  test:
+    needs: matrix-check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Base tests across supported Python versions.
+          - {python: '3.8',  variant: base}
+          - {python: '3.9',  variant: base}
+          - {python: '3.10', variant: base}
+          - {python: '3.11', variant: base}
+          - {python: '3.12', variant: base}
+          - {python: '3.13', variant: base}
+          # Legacy Scrapyd pin on the oldest/newest maintained lines.
+          - {python: '3.9',  variant: scrapyd-v143, scrapyd_version: '1.4.3'}
+          - {python: '3.12', variant: scrapyd-v143, scrapyd_version: '1.4.3'}
+          # Optional git-master dependencies.
+          - {python: '3.10', variant: git-postgresql, use_git: '1',
+             database_url: 'postgresql://circleci:passw0rd@localhost:5432/circleci'}
+          - {python: '3.10', variant: git-mysql, use_git: '1',
+             database_url: 'mysql://root:rootpw@127.0.0.1:3306'}
+          # Database variants.
+          - {python: '3.10', variant: sqlite,
+             data_path: '/home/runner/work/scrapydweb_data',
+             database_url: 'sqlite:////home/runner/work/scrapydweb_database'}
+          - {python: '3.10', variant: postgresql,
+             database_url: 'postgresql://circleci:passw0rd@localhost:5432/circleci'}
+          - {python: '3.10', variant: mysql,
+             database_url: 'mysql://root:rootpw@127.0.0.1:3306'}
+
+    # Both database services are always defined (GitHub Actions services
+    # cannot be conditional); legs that do not need them simply ignore them.
+    services:
+      postgres:
+        image: postgres:9.6
+        env:
+          POSTGRES_USER: circleci
+          POSTGRES_DB: circleci
+          POSTGRES_PASSWORD: passw0rd
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U circleci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      PYTHON_BIN: python
+      USE_GIT: ${{ matrix.use_git || '' }}
+      SCRAPYD_VERSION: ${{ matrix.scrapyd_version || '' }}
+      DATA_PATH: ${{ matrix.data_path || '' }}
+      DATABASE_URL: ${{ matrix.database_url || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Single unified entry point shared with CircleCI and local runs.
+      - name: Install, launch Scrapyd and run tests
+        run: ./test.sh
+
+      - name: Upload coverage to Codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python }}-${{ matrix.variant }}
+          path: |
+            htmlcov/
+            coverage.xml
+          if-no-files-found: ignore
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-${{ matrix.python }}-${{ matrix.variant }}
+          path: allure-results/
+          if-no-files-found: ignore

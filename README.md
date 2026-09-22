@@ -100,6 +100,16 @@ The latest version of Google Chrome, Firefox, and Safari.
 
 <br>
 
+The quickest way is the unified entry point used by CI
+(see [docs/CI.md](docs/CI.md) for all options):
+
+```bash
+$ ./test.sh                # create venv, launch Scrapyd, run the full suite
+$ DRY_RUN=1 ./test.sh      # preview the steps without executing them
+```
+
+Or set everything up manually:
+
 ```bash
 $ git clone https://github.com/my8100/scrapydweb.git
 $ cd scrapydweb
